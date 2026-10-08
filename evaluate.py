@@ -8,7 +8,7 @@ import argparse
 import torch
 from torch.utils.data import DataLoader
 
-from data import StateSequenceDataset, load_trajectories, make_synthetic
+from data import StateSequenceDataset, load_trajectories, make_synthetic, trim_noops
 from model import CausalStateTransformer, log_prob, mixture_mean
 
 
@@ -31,6 +31,7 @@ def main():
     data_path = args.data or targs["data"]
     # Synthetic eval uses a different seed so it's unseen data.
     trajs = load_trajectories(data_path) if data_path else make_synthetic(seq_len=seq_len, seed=999, num_traj=500)
+    trajs = trim_noops(trajs, targs.get("trim_noops"))
     ds = StateSequenceDataset(trajs, seq_len, mean=ckpt["mean"], std=ckpt["std"])
     loader = DataLoader(ds, batch_size=64)
 

@@ -102,18 +102,44 @@ class StateSequenceDataset(Dataset):
         return x * std + mean
 
 
-def build_datasets(data_path, seq_len, stride=None, val_frac=0.1, seed=0, synthetic_kwargs=None):
-    """Split by trajectory (not by window) so val windows never overlap train."""
+def load_source(data_path, seq_len, seed=0, synthetic_kwargs=None):
+    """Trajectories from a file, or the synthetic set training used if no path."""
     if data_path:
-        trajectories = load_trajectories(data_path)
-    else:
-        trajectories = make_synthetic(seq_len=seq_len, seed=seed, **(synthetic_kwargs or {}))
+        return load_trajectories(data_path)
+    return make_synthetic(seq_len=seq_len, seed=seed, **(synthetic_kwargs or {}))
 
-    rng = np.random.default_rng(seed)
-    order = rng.permutation(len(trajectories))
-    n_val = max(1, int(len(trajectories) * val_frac)) if len(trajectories) > 1 else 0
-    val_traj = [trajectories[i] for i in order[:n_val]]
-    train_traj = [trajectories[i] for i in order[n_val:]]
+
+def split_indices(n, val_frac=0.1, seed=0):
+    """(train_idx, val_idx) trajectory indices, as used by build_datasets."""
+    order = np.random.default_rng(seed).permutation(n)
+    n_val = max(1, int(n * val_frac)) if n > 1 else 0
+    return order[n_val:], order[:n_val]
+
+
+def noop_start(traj, eps):
+    """Start index after trimming leading no-ops: the last idle state before the
+    first move, kept as context. A move is a step where some dim changes by >= eps
+    (raw units). A trajectory that never moves keeps only its last state."""
+    moving = np.abs(np.diff(traj, axis=0)).max(-1) >= eps
+    return int(moving.argmax()) if moving.any() else len(traj) - 1
+
+
+def trim_noops(trajectories, eps):
+    """Trim leading no-ops from every trajectory (no-op if eps is None)."""
+    if eps is None:
+        return trajectories
+    starts = [noop_start(t, eps) for t in trajectories]
+    print(f"trim_noops={eps}: removed {sum(starts)} leading no-op states "
+          f"from {sum(s > 0 for s in starts)} / {len(trajectories)} trajectories")
+    return [t[s:] for t, s in zip(trajectories, starts)]
+
+
+def build_datasets(data_path, seq_len, stride=None, val_frac=0.1, seed=0, trim_noops_eps=None, synthetic_kwargs=None):
+    """Split by trajectory (not by window) so val windows never overlap train."""
+    trajectories = trim_noops(load_source(data_path, seq_len, seed, synthetic_kwargs), trim_noops_eps)
+    train_idx, val_idx = split_indices(len(trajectories), val_frac, seed)
+    val_traj = [trajectories[i] for i in val_idx]
+    train_traj = [trajectories[i] for i in train_idx]
 
     if not val_traj:
         # Single long trajectory: hold out its tail instead.

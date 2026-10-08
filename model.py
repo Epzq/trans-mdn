@@ -43,14 +43,15 @@ class CausalStateTransformer(nn.Module):
         ff_mult=4,
         dropout=0.0,
         max_len=4096,
-        min_log_std=-7.0,
-        max_log_std=3.0,
+        context_len=None,
     ):
         super().__init__()
         self.state_dim = state_dim
         self.n_components = n_components
         self.max_len = max_len
-        self.min_log_std, self.max_log_std = min_log_std, max_log_std
+        # Longest history the model was trained on (seq_len - 1: a window of
+        # seq_len states gives seq_len - 1 inputs). Positions beyond it are untrained.
+        self.context_len = context_len
         self.in_proj = nn.Linear(state_dim, d_model)
         self.pos = SinusoidalPositionalEncoding(d_model, max_len)
         layer = nn.TransformerEncoderLayer(
@@ -69,12 +70,8 @@ class CausalStateTransformer(nn.Module):
         h = self.encoder(self.pos(self.in_proj(x)), mask=causal, is_causal=True)
         out = self.out_proj(self.norm(h))
         logits = out[..., :K]
-        delta, log_std = out[..., K:].view(B, T, K, 2 * D).chunk(2, dim=-1)
-        # Means are offsets from the current state, so every component starts
-        # near the target and competes for it (avoids early mode collapse).
-        mu = x.unsqueeze(-2) + delta
-        # Clamp so a component can't collapse onto a single point (NLL -> -inf).
-        return logits, mu, log_std.clamp(self.min_log_std, self.max_log_std)
+        mu, log_std = out[..., K:].view(B, T, K, 2 * D).chunk(2, dim=-1)
+        return logits, mu, log_std
 
     @torch.no_grad()
     def generate(self, prefix, n_steps, mode="sample", context_len=None):
@@ -82,9 +79,10 @@ class CausalStateTransformer(nn.Module):
 
         mode="sample": draw from the predicted mixture (stochastic rollouts)
         mode="mode":   mean of the highest-weight component (deterministic)
-        Returns (B, T0 + n_steps, D). context_len caps the attended history.
+        Returns (B, T0 + n_steps, D). context_len caps the attended history
+        (default: the trained context length).
         """
-        context_len = context_len or self.max_len
+        context_len = context_len or self.context_len or self.max_len
         x = prefix
         for _ in range(n_steps):
             params = select(self(x[:, -context_len:]), (slice(None), -1))
@@ -123,6 +121,17 @@ def sample(params, n=None):
     mu_k = mu.gather(-2, idx).squeeze(-2)
     std_k = log_std.gather(-2, idx).squeeze(-2).exp()
     return mu_k + std_k * torch.randn_like(mu_k)
+
+
+@torch.no_grad()
+def mc_p_value(params, x, n=1000, chunk=100):
+    """P(log p(x~) <= log p(x)) for x~ drawn from the mixture, by Monte Carlo.
+    Small = x is unusually unlikely under its own prediction. x (..., D) -> (...)."""
+    lp = log_prob(params, x)
+    count = torch.zeros_like(lp)
+    for s in range(0, n, chunk):
+        count += (log_prob(params, sample(params, min(chunk, n - s))) <= lp).float().sum(0)
+    return count / n
 
 
 def mixture_mean(params):
