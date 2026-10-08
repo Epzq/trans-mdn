@@ -13,7 +13,7 @@ Minimal causal (GPT-style) distribution modeling of continuous state sequences. 
 | `model.py` | `CausalStateTransformer` (mixture head, `generate`), `log_prob`, `sample`, `mixture_mean`, `mixture_mode`, `nll_loss` |
 | `train.py` | Training loop with NLL loss and teacher forcing; saves `last.pt` / `best.pt` to `--out_dir` |
 | `evaluate.py` | NLL, one-step MSE of the mixture mean, and rollout MSE, compared with copy-last and linear-extrapolation baselines |
-| `score.py` | Per-step likelihood of a trajectory: log-prob, validation percentile, Monte Carlo p-value, worst dimension |
+| `score.py` | Per-step likelihood of a trajectory: log-likelihood, validation percentile, Monte Carlo p-value, worst dimension |
 
 ## Data format
 
@@ -64,5 +64,5 @@ From Python:
 from score import Scorer
 scorer = Scorer("runs/mine/best.pt")
 out = scorer.score(states)   # states: raw (T, D) array; results are for t = 1..T-1
-out["log_prob"], out["percentile"], out["p_value"], out["worst_dim"], out["per_dim_log_prob"]
+out["log_lik"], out["percentile"], out["p_value"], out["worst_dim"], out["per_dim_log_lik"]
 ```

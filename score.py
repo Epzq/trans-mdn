@@ -1,13 +1,14 @@
 """Score how likely each state x[t] is under the model, given x[<t].
 
 For every step t >= 1 of a trajectory this reports:
-  log_prob    log p(x[t] | x[<t]) in normalized units (a density, not a probability)
-  percentile  fraction of validation transitions with a lower log_prob
+  log_lik     log-likelihood log p(x[t] | x[<t]) in normalized units (a log density,
+              not a log probability: it can be positive and has no fixed scale)
+  percentile  fraction of validation transitions with a lower log_lik
               (small = less likely than typical transitions)
   p_value     P(log p(x~) <= log p(x[t])) for x~ sampled from the predicted
               mixture: how often the model's own prediction produces something
               this unlikely (small = surprising given this context)
-  worst_dim   state dimension contributing least to log_prob
+  worst_dim   state dimension contributing least to log_lik
 
 CLI:
   python score.py --ckpt runs/mine/best.pt --val                        # all held-out trajectories
@@ -107,11 +108,11 @@ class Scorer:
         return {
             "t": np.arange(start + 1, start + len(x)),
             "trim_start": start,
-            "log_prob": lp,
+            "log_lik": lp,
             "percentile": np.searchsorted(self.ref, lp) / len(self.ref),
             "p_value": p_value.cpu().numpy(),
             "worst_dim": per_dim.argmin(-1).cpu().numpy(),
-            "per_dim_log_prob": per_dim.cpu().numpy(),
+            "per_dim_log_lik": per_dim.cpu().numpy(),
         }
 
 
@@ -119,18 +120,18 @@ def print_scores(name, states, out, alpha, show_all):
     flagged = (out["percentile"] < alpha) | (out["p_value"] < alpha)
     trimmed = f" ({out['trim_start']} leading no-ops trimmed)" if out["trim_start"] else ""
     print(f"\n{name}: {len(states)} states{trimmed}, {flagged.sum()} / {len(flagged)} steps flagged, "
-          f"min log_prob {out['log_prob'].min():.2f}")
+          f"min log_lik {out['log_lik'].min():.2f}")
     if not (show_all or flagged.any()):
         return flagged
     # State values x[t] in raw units; the worst_dim value is shown in [brackets].
     dims = "".join(f"{f'x{d}':>11s}" for d in range(states.shape[-1]))
-    print(f"{'t':>5s} {'log_prob':>9s} {'pctile':>7s} {'p_value':>8s} {'worst_dim':>9s}   {dims}")
+    print(f"{'t':>5s} {'log_lik':>9s} {'pctile':>7s} {'p_value':>8s} {'worst_dim':>9s}   {dims}")
     for i in range(len(out["t"])):
         if show_all or flagged[i]:
             t, w = out["t"][i], out["worst_dim"][i]
             vals = "".join(f"[{v:9.4g}]" if d == w else f" {v:9.4g} " for d, v in enumerate(states[t]))
             print(
-                f"{t:5d} {out['log_prob'][i]:9.2f} {out['percentile'][i]:7.3f} "
+                f"{t:5d} {out['log_lik'][i]:9.2f} {out['percentile'][i]:7.3f} "
                 f"{out['p_value'][i]:8.3f} {w:9d} {'*' if flagged[i] else ' '} {vals}"
             )
     return flagged
@@ -151,7 +152,7 @@ def main():
         p.error("pass exactly one of --val or --traj")
 
     scorer = Scorer(args.ckpt, args.device, args.n_mc)
-    print(f"validation reference: {len(scorer.ref)} transitions, median log_prob {np.median(scorer.ref):.2f}")
+    print(f"validation reference: {len(scorer.ref)} transitions, median log_lik {np.median(scorer.ref):.2f}")
     if scorer.noise_std is None:
         print("tolerance: none (trained on clean demonstrations)")
     else:
